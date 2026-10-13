@@ -1,0 +1,28 @@
+numpy>=1.24.0
+scipy>=1.10.0
+torch>=2.4.0
+torchvision>=0.15.0
+torchmetrics>=1.0.0
+torch-geometric>=2.3.0
+pytorch-lightning>=2.0.0
+timm>=0.9.0
+pandas>=2.0.0
+tensorboard>=2.13.0
+pyyaml>=6.0.0
+einops>=0.7.0     # Spatial-Mamba
+fvcore>=0.1.5     # Spatial-Mamba
+
+# Optional: mamba-ssm for Vision Mamba with CUDA-accelerated selective scan
+# Requires CUDA toolkit (nvcc) for compilation. Install with:
+#   pip install mamba-ssm causal-conv1d --no-build-isolation
+# mamba-ssm>=2.0.0
+# causal-conv1d>=1.0.0
+
+# Optional: MambaVision (NVIDIA hybrid CNN+Mamba+Attention), requires CUDA
+# pip install mambavision
+# mambavision>=1.0.0
+
+# Optional: PyG sparse operations for GCN/VGAE (requires compilation)
+# Install with: pip install torch-scatter torch-sparse -f https://data.pyg.org/whl/torch-{VERSION}+{CUDA}.html
+# torch-scatter>=2.1.0
+# torch-sparse>=0.6.0

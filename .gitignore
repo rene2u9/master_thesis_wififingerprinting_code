@@ -1,0 +1,42 @@
+# Python virtual environment
+venv/
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Data files
+*.csv
+*.db
+*.db-shm
+*.db-wal
+
+# Model weights (tracked via Git LFS or external)
+*.pth
+*.h5
+*.ckpt
+*.keras
+*.safetensors
+
+# Training artifacts
+runs/
+logs/
+wandb/
+checkpoints/
+experiments/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+training_logs/

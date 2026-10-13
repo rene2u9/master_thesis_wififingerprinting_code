@@ -1,0 +1,2409 @@
+data:
+  db_path: "data/wifi_fingerprints.db"
+  batch_size: 32
+  num_workers: 4
+  train_split: 0.7
+  val_split: 0.15
+  test_split: 0.15
+  random_seed: 42
+  max_samples: 40000                     # same subset via random_seed
+  missing_value: -100                    # dBm for undetected APs
+  rssi_normalization: "minmax"           # "minmax" | "legacy"
+  rssi_min: -90                          # dBm, mapped to 0
+  rssi_max: -50                          # dBm, mapped to 1
+  storage_place_filter: "GRO-4%"        # aisles GRO-40..GRO-49
+  deduplicate: true                      # needs fingerprint_hash table (scripts/deduplicate_fingerprints.py)
+  filter_ssid_prefix: null
+  max_aps: 256                           # 208 physical APs, padded to 16x16
+  image_shape: [16, 16, 1]
+  target_scale: [228.0, 336.0]          # metres, [lat, lon] range
+
+training:
+  max_epochs: 200
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  optimizer: "adam"
+  scheduler: "reduce_on_plateau"         # reduce_on_plateau | cosine_warmup | constant
+  warmup_epochs: 5                       # cosine_warmup only
+  early_stopping_patience: 30            # must exceed warmup_epochs
+  gradient_clip_val: 1.0
+  dropout: 0.5
+  noise_coefficient: 0.0                 # train only, not used by SAE pretraining
+  save_top_k: 3
+  checkpoint_metric: "val_mpe"           # metres
+  checkpoint_mode: "min"
+
+metrics:
+  compute: ["mpe", "cdf", "positioning_accuracy", "inference_time"]
+  cdf_thresholds: [1.0, 2.0, 5.0, 10.0, 15.0, 20.0, 25.0, 30.0, 40.0, 50.0]
+  accuracy_tolerance: 20.0               # metres
+
+logging:
+  experiment_name: "wifi_fingerprinting"
+  tensorboard_dir: "experiments/tensorboard"
+  save_predictions: true
+  log_every_n_steps: 50
+
+hardware:
+  accelerator: "auto"
+  devices: 1
+  precision: 32
+  deterministic: true
+
+ablation:
+  dataset_sizes: [0.1, 0.25, 0.5, 0.75, 1.0]
+  temporal_splits:
+    enabled: true
+    train_date_range: ["2025-11-11", "2026-02-01"]
+    test_date_range: ["2026-02-01", "2026-03-12"]
+  denoising_variants:
+    - { name: "no_noise",     noise_coefficient: 0.0 }
+    - { name: "light_noise",  noise_coefficient: 0.15 }
+    - { name: "medium_noise", noise_coefficient: 0.3 }
+    - { name: "heavy_noise",  noise_coefficient: 0.5 }
+
+# spatial_image_mode: unset (sequential) | naive | oa | upscale | bilinear | gaussian | warehouse
+# graph_topology: covisible | bipartite
+# per-model image_shape overrides data.image_shape, gaussian needs >= 64x64
+
+runs:
+
+  dscnn_sequential:
+    model: dscnn
+    dropout: 0.5
+    noise_coefficient: 0.0
+    image_shape: [16, 16, 1]
+
+  dscnn_spatial_naive:
+    model: dscnn
+    dropout: 0.5
+    noise_coefficient: 0.0
+    spatial_image_mode: "naive"          # max-RSSI wins on pixel collisions
+    image_shape: [16, 16, 1]
+
+  dscnn_spatial_oa:
+    model: dscnn
+    dropout: 0.5
+    noise_coefficient: 0.0
+    spatial_image_mode: "oa"
+    image_shape: [16, 16, 1]
+
+  dscnn_gaussian:
+    model: dscnn
+    dropout: 0.5
+    noise_coefficient: 0.0
+    spatial_image_mode: "gaussian"
+    image_shape: [64, 64, 1]
+
+  efficientnet:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [64, 64, 1]
+
+  efficientnet_v2:
+    model: efficientnet
+    variant: "v2_s"
+    pretrained: true                     # ImageNet-1K weights
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [384, 384, 1]
+    num_workers: 0                       # shared memory too small for workers
+    learning_rate: 0.0001
+
+  resnet:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    noise_coefficient: 0.0
+
+  resnet50:
+    model: resnet
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    noise_coefficient: 0.0
+
+  vit:
+    model: vit
+    patch_size: 4
+    embed_dim: 128
+    depth: 4
+    nhead: 4
+    dim_feedforward: 256
+    dropout: 0.1
+    scheduler: "cosine_warmup"
+    noise_coefficient: 0.0
+
+  vit_larger:
+    model: vit
+    patch_size: 4
+    embed_dim: 256
+    depth: 6
+    nhead: 8
+    dim_feedforward: 512
+    dropout: 0.1
+    scheduler: "cosine_warmup"
+    noise_coefficient: 0.0
+
+  vision_mamba_small_224:
+    model: vision_mamba
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16                       # 14x14 patches, matches the pretrained grid
+    embed_dim: 384                       # Vim-Small
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+
+  vision_mamba_mean_2xsigma:
+    model: vision_mamba
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16
+    embed_dim: 384
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+
+  mamba_vision_t_64:
+    model: mamba_vision
+    variant: "mamba_vision_T"
+    pretrained: true
+    spatial_image_mode: "gaussian"
+    image_shape: [64, 64, 1]
+
+  mamba_vision_t_128:
+    model: mamba_vision
+    variant: "mamba_vision_T"
+    pretrained: true
+    spatial_image_mode: "gaussian"
+    image_shape: [128, 128, 1]
+
+  swin_t:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+
+  # Swin-T ablation: fill_mode, sigma, LR
+
+  swin_t_mean_fill:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"                        # background = per-sample mean
+
+  swin_t_mean_fill_2x_sigma:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+
+  swin_t_no_warmup:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "reduce_on_plateau"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+
+  swin_t_scratch:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: false
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.001
+    fill_mode: "mean"
+
+  swin_t_mean_fill_lr5e5:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.00005
+    fill_mode: "mean"
+
+  swin_t_bilinear_mean:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "bilinear"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+
+  swin_t_stage2:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2                              # 14x14x384 feature map
+    head_type: "flatten"                      # flatten | dwconv | squeeze | mlp
+
+  spatial_mamba_t_pretrained:
+    model: spatial_mamba
+    variant: "tiny"
+    pretrained_path: "models/spatial_mamba/spatial_mamba_t.pth"
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2                              # 14x14x384 feature map
+
+  # 3 channels: RSSI, AP positions, detection mask
+
+  swin_t_3ch:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 3]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+
+  vision_mamba_3ch:
+    model: vision_mamba
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16
+    embed_dim: 384
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 3]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+
+  mamba:
+    model: mamba
+    patch_size: 4
+    embed_dim: 96
+    depth: 6
+    d_state: 1
+    mlp_ratio: 4.0
+    drop_path_rate: 0.1
+    noise_coefficient: 0.0
+
+  transformer:
+    model: transformer
+    d_model: 64
+    nhead: 4
+    num_encoder_layers: 2
+    dim_feedforward: 256
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "cosine_warmup"
+    use_positional_encoding: false
+    masking_strategy: "additive"
+    pooling: "cls"
+
+  transformer_v2:
+    model: transformer
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "cosine_warmup"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: false
+    learning_rate: 0.001
+
+  transformer_v2_spatial:
+    model: transformer
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "cosine_warmup"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: true
+    learning_rate: 0.001
+
+  transformer_plateau:
+    model: transformer
+    d_model: 64
+    nhead: 4
+    num_encoder_layers: 2
+    dim_feedforward: 256
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "reduce_on_plateau"
+    use_positional_encoding: false
+    masking_strategy: "additive"
+    pooling: "cls"
+
+  transformer_v2_plateau:
+    model: transformer
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "reduce_on_plateau"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: false
+    learning_rate: 0.0001
+
+  transformer_v2_spatial_plateau:
+    model: transformer
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "reduce_on_plateau"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: true
+    learning_rate: 0.0001
+
+  ffn:
+    model: ffn
+    hidden_layers: [256, 128]
+    dropout: 0.25
+    activation: "relu"
+    noise_coefficient: 0.0
+
+  ffn_large:
+    model: ffn
+    hidden_layers: [512, 256, 128]
+    dropout: 0.25
+    activation: "relu"
+    noise_coefficient: 0.0
+
+  sae:
+    model: sae
+    encoder_layers: [256, 128, 64]
+    regression_layers: [256]
+    dropout: 0.25
+    corruption_level: 0.1               # masking probability
+    pretrain_epochs: 50
+    pretrain_batch_size: 64
+    pretrain_lr: 0.001
+    freeze_encoder: false
+    noise_coefficient: 0.0
+    learning_rate: 0.0001                # 1e-3 saturates the Sigmoid encoder
+    scheduler: "reduce_on_plateau"
+
+  sae_relu:
+    model: sae
+    encoder_layers: [256, 128, 64]
+    regression_layers: [256]
+    dropout: 0.25
+    corruption_level: 0.1
+    pretrain_epochs: 50
+    pretrain_batch_size: 64
+    pretrain_lr: 0.001
+    freeze_encoder: false
+    noise_coefficient: 0.0
+    encoder_activation: "relu"
+    learning_rate: 0.001
+    scheduler: "reduce_on_plateau"
+
+  gcn:
+    model: gcn
+    in_channels: 3                       # [rssi, norm_lat, norm_lon]
+    use_ap_positions: true
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    noise_coefficient: 0.0
+    graph_topology: "covisible"
+
+  gcn_bipartite:
+    model: gcn
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    noise_coefficient: 0.0
+    graph_topology: "bipartite"
+
+  gcn_larger:
+    model: gcn
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 256
+    num_layers: 4
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    noise_coefficient: 0.0
+    graph_topology: "covisible"
+
+  vgae:
+    model: vgae
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    latent_dim: 64
+    dropout: 0.3
+    pooling: "concat"
+    kl_weight: 0.1                       # weight of the KL term
+    rssi_threshold: -95.0
+    noise_coefficient: 0.0
+    graph_topology: "covisible"
+
+  vgae_bipartite:
+    model: vgae
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    latent_dim: 64
+    dropout: 0.3
+    pooling: "concat"
+    kl_weight: 0.1
+    rssi_threshold: -95.0
+    noise_coefficient: 0.0
+    graph_topology: "bipartite"
+
+  # Min-max normalization set (gaussian splat, mean fill, 2x sigma, 224px)
+
+  dscnn_minmax:
+    model: dscnn
+    dropout: 0.5
+    noise_coefficient: 0.0
+    spatial_image_mode: "gaussian"
+    image_shape: [64, 64, 1]
+
+  # EfficientNet-B0 @224 (7x7x320 feature map)
+  efficientnet_minmax_dwconv:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    head_type: "dwconv"
+
+  efficientnet_minmax_squeeze:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    head_type: "squeeze"
+    squeeze_channels: 3
+
+  # Swin-T stage2 @224 (14x14x384 feature map)
+  swin_minmax_dwconv:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    head_type: "dwconv"
+
+  swin_minmax_squeeze:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    head_type: "squeeze"
+    squeeze_channels: 3
+
+  # ResNet18 @224 (7x7x512 feature map)
+  resnet_minmax_dwconv:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    head_type: "dwconv"
+
+  resnet_minmax_squeeze:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    head_type: "squeeze"
+    squeeze_channels: 3
+
+  # head ablation on the stage2 map
+  swin_t_stage2_dwconv:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    head_type: "dwconv"                       # depthwise 14x14 conv -> Linear(384,2)
+
+  swin_t_stage2_squeeze:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    head_type: "squeeze"                      # 1x1 conv 384->3 -> Linear(588,2)
+    squeeze_channels: 3
+  # 200k samples, max_epochs 200
+
+  dscnn_minmax_200k:
+    model: dscnn
+    dropout: 0.5
+    noise_coefficient: 0.0
+    spatial_image_mode: "gaussian"
+    image_shape: [64, 64, 1]
+    max_samples: 200000
+    max_epochs: 200
+
+  efficientnet_minmax_dwconv_200k:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    head_type: "dwconv"
+    max_samples: 200000
+    max_epochs: 200
+
+  swin_minmax_squeeze_200k:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    head_type: "squeeze"
+    squeeze_channels: 3
+    max_samples: 200000
+    max_epochs: 200
+
+  # Pretrained-backbone recipe sweep (40k)
+
+  # EfficientNet-B0 dwconv
+  en_dwconv_constant:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    head_type: "dwconv"
+
+  en_dwconv_rop:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "reduce_on_plateau"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    head_type: "dwconv"
+
+  en_dwconv_constant_lr3e4:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0003
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    head_type: "dwconv"
+
+  en_dwconv_disclr:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1                 # backbone 1e-5, head 1e-4
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    head_type: "dwconv"
+
+  # Swin-T squeeze (stage2 14x14)
+  sw_sq_constant:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    head_type: "squeeze"
+    squeeze_channels: 3
+
+  sw_sq_rop:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "reduce_on_plateau"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    head_type: "squeeze"
+    squeeze_channels: 3
+
+  sw_sq_constant_lr3e4:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0003
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    head_type: "squeeze"
+    squeeze_channels: 3
+
+  sw_sq_disclr:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    head_type: "squeeze"
+    squeeze_channels: 3
+
+  # ResNet-18 at native 16x16
+  resnet_constant:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    learning_rate: 0.0001
+    noise_coefficient: 0.0
+
+  resnet50_constant:
+    model: resnet
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    learning_rate: 0.0001
+    noise_coefficient: 0.0
+
+  # ResNet cosine_warmup variants
+  resnet_cosine_warmup:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    learning_rate: 0.001
+    noise_coefficient: 0.0
+
+  resnet50_cosine_warmup:
+    model: resnet
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "cosine_warmup"
+    learning_rate: 0.001
+    noise_coefficient: 0.0
+
+  # ResNet recipe matrix, native 16x16
+  resnet_disclr:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    noise_coefficient: 0.0
+
+  resnet50_disclr:
+    model: resnet
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    noise_coefficient: 0.0
+
+  resnet_constant_lr3e4:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    learning_rate: 0.0003
+    noise_coefficient: 0.0
+
+  resnet50_constant_lr3e4:
+    model: resnet
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    learning_rate: 0.0003
+    noise_coefficient: 0.0
+
+  # Vim 40k: noise off, constant LR 1e-4
+  vision_mamba_fixed_40k:
+    model: "vision_mamba"
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16
+    embed_dim: 384
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    scheduler: "constant"
+    noise_coefficient: 0.0
+    max_epochs: 60
+
+  # MLP head on the CLS token
+  vision_mamba_fixed_mlp_40k:
+    model: "vision_mamba"
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16
+    embed_dim: 384
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    head_type: "mlp"
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    learning_rate: 0.0001
+    scheduler: "constant"
+    noise_coefficient: 0.0
+    max_epochs: 60
+
+  # Spatial readout from the 14x14 patch-token grid
+  vision_mamba_dwconv_disclr_40k:
+    model: "vision_mamba"
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16
+    embed_dim: 384
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    head_type: "dwconv"
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    optimizer: "adamw"
+    learning_rate: 0.0001
+    backbone_lr_mult: 0.1
+    scheduler: "constant"
+    noise_coefficient: 0.0
+    max_epochs: 60
+
+  # resnet18 16x16 at 200k
+  resnet18_200k:
+    model: "resnet"
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    noise_coefficient: 0.0
+    max_samples: 200000
+    max_epochs: 100
+
+  # dwconv + disc-LR at 200k
+  vision_mamba_dwconv_disclr_200k:
+    model: "vision_mamba"
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16
+    embed_dim: 384
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    head_type: "dwconv"
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    optimizer: "adamw"
+    learning_rate: 0.0001
+    backbone_lr_mult: 0.1
+    scheduler: "constant"
+    noise_coefficient: 0.0
+    max_samples: 200000
+    max_epochs: 20
+
+  vision_mamba_squeeze_disclr_40k:
+    model: "vision_mamba"
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16
+    embed_dim: 384
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    head_type: "squeeze"
+    squeeze_channels: 3
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    optimizer: "adamw"
+    learning_rate: 0.0001
+    backbone_lr_mult: 0.1
+    scheduler: "constant"
+    noise_coefficient: 0.0
+    max_epochs: 60
+
+  # Discriminative LR (Vim uses its own _param_groups)
+  vision_mamba_fixed_disclr_40k:
+    model: "vision_mamba"
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16
+    embed_dim: 384
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    head_type: "mlp"
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    optimizer: "adamw"
+    learning_rate: 0.0001
+    backbone_lr_mult: 0.1
+    scheduler: "constant"
+    noise_coefficient: 0.0
+    max_epochs: 60
+
+  # Best configs at 100k, deduplicated
+  resnet_dedup100k:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    max_samples: 100000
+
+  resnet50_dedup100k:
+    model: resnet
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    max_samples: 100000
+
+  # Bay-classification head (soft CE over bay centroids)
+  resnet50_cls100k:
+    model: resnet_cls
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # cls-head follow-ups
+  resnet50_cls_balanced:
+    model: resnet_cls
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    sampling: balanced
+    reps_per_place: 10
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  resnet50_cls_balanced_n5:
+    model: resnet_cls
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    sampling: balanced
+    reps_per_place: 5
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  resnet50_cls_seed7:
+    model: resnet_cls
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    max_samples: 100000
+    random_seed: 7
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  resnet50_cls_sigma1p5:
+    model: resnet_cls
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    max_samples: 100000
+    label_sigma_m: 1.5
+    readout_k: 9
+
+  resnet50_cls_sigma5:
+    model: resnet_cls
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    max_samples: 100000
+    label_sigma_m: 5.0
+    readout_k: 9
+
+  # Split matrix: {regression, cls} x {group, temporal}
+  resnet50_group100k:
+    model: resnet
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    max_samples: 100000
+    split_strategy: group
+
+  resnet50_temporal100k:
+    model: resnet
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    max_samples: 100000
+    split_strategy: temporal
+
+  resnet50_cls_group100k:
+    model: resnet_cls
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    max_samples: 100000
+    split_strategy: group
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  resnet50_cls_temporal100k:
+    model: resnet_cls
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    max_samples: 100000
+    split_strategy: temporal
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # cls-head generalization and scale
+  vim_cls_100k:
+    model: vim_cls
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16
+    embed_dim: 384
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    optimizer: "adamw"
+    learning_rate: 0.0001
+    backbone_lr_mult: 0.1
+    scheduler: "constant"
+    max_samples: 100000
+    max_epochs: 60
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # WKNN-LOO label cleaning + cls head
+  resnet50_cls_clean100k:
+    model: resnet_cls
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    max_samples: 100000
+    clean_fraction: 0.15
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # Full data (562k rows)
+  resnet50_cls_full:
+    model: resnet_cls
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    # omitting this inherits data.max_samples
+    max_samples: null
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # cls head on Swin-T
+  swin_cls_100k:
+    model: swin_cls
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    max_samples: 100000
+    max_epochs: 60
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # cls head on DSCNN (no pretraining)
+  dscnn_cls_100k:
+    model: dscnn_cls
+    image_shape: [16, 16, 1]
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # cls head on the remaining families
+  efficientnet_cls_100k:
+    model: efficientnet_cls
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    max_samples: 100000
+    max_epochs: 60
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  vit_cls_100k:
+    model: vit_cls
+    patch_size: 4
+    embed_dim: 256
+    depth: 6
+    nhead: 8
+    dim_feedforward: 512
+    dropout: 0.1
+    scheduler: "cosine_warmup"
+    noise_coefficient: 0.0
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  ffn_cls_100k:
+    model: ffn_cls
+    hidden_layers: [512, 256, 128]
+    dropout: 0.25
+    activation: "relu"
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  sae_cls_100k:
+    model: sae_cls
+    encoder_layers: [256, 128, 64]
+    dropout: 0.25
+    corruption_level: 0.1
+    pretrain_epochs: 50
+    pretrain_batch_size: 64
+    pretrain_lr: 0.001
+    freeze_encoder: false
+    # encoder 1e-4, classifier 1e-3
+    learning_rate: 0.001
+    backbone_lr_mult: 0.1
+    scheduler: "reduce_on_plateau"
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # SAE regression twin with disc-LR, needs ReferenceSAE._param_groups
+  sae_reg_disclr_100k:
+    model: sae
+    encoder_layers: [256, 128, 64]
+    regression_layers: [256]
+    dropout: 0.25
+    corruption_level: 0.1
+    pretrain_epochs: 50
+    pretrain_batch_size: 64
+    pretrain_lr: 0.001
+    freeze_encoder: false
+    learning_rate: 0.001
+    backbone_lr_mult: 0.1
+    scheduler: "reduce_on_plateau"
+    max_samples: 100000
+
+  gcn_cls_100k:
+    model: gcn_cls
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # bipartite topology
+  gcn_cls_bipartite_100k:
+    model: gcn_cls
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "bipartite"
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  gcn_bipartite_dedup100k:
+    model: gcn
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "bipartite"
+    max_samples: 100000
+
+  # soft CE + visible-node-masked KL
+  vgae_cls_100k:
+    model: vgae_cls
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    latent_dim: 64
+    dropout: 0.3
+    pooling: "concat"
+    kl_weight: 0.1
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # stays at 16x16, the Python selective scan slows with token count
+  mamba_cls_100k:
+    model: mamba_cls
+    patch_size: 4
+    embed_dim: 96
+    depth: 6
+    d_state: 1
+    mlp_ratio: 4.0
+    drop_path_rate: 0.1
+    noise_coefficient: 0.0
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # requires CUDA (mamba-ssm kernels)
+  mamba_vision_cls_100k:
+    model: mamba_vision_cls
+    variant: "mamba_vision_T"
+    pretrained: true
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    spatial_image_mode: "gaussian"
+    image_shape: [128, 128, 1]
+    max_samples: 100000
+    max_epochs: 60
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # requires CUDA (vendored kernels)
+  spatial_mamba_cls_100k:
+    model: spatial_mamba_cls
+    variant: "tiny"
+    pretrained_path: "models/spatial_mamba/spatial_mamba_t.pth"
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    max_samples: 100000
+    max_epochs: 60
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  transformer_cls_100k:
+    model: transformer_cls
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "reduce_on_plateau"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: false
+    learning_rate: 0.0001
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  sae_dedup100k:
+    model: sae
+    encoder_layers: [256, 128, 64]
+    regression_layers: [256]
+    dropout: 0.25
+    corruption_level: 0.1
+    pretrain_epochs: 50
+    pretrain_batch_size: 64
+    pretrain_lr: 0.001
+    freeze_encoder: false
+    learning_rate: 0.0001
+    scheduler: "reduce_on_plateau"
+    max_samples: 100000
+
+  ffn_large_dedup100k:
+    model: ffn
+    hidden_layers: [512, 256, 128]
+    dropout: 0.25
+    activation: "relu"
+    max_samples: 100000
+
+  vision_mamba_disclr_dedup100k:
+    model: "vision_mamba"
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16
+    embed_dim: 384
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    head_type: "mlp"
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    optimizer: "adamw"
+    learning_rate: 0.0001
+    backbone_lr_mult: 0.1
+    scheduler: "constant"
+    max_samples: 100000
+    max_epochs: 60
+
+  # Balanced sampling N=10, size set by reps_per_place
+  resnet_balanced:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    sampling: balanced
+    reps_per_place: 10
+
+  resnet50_balanced:
+    model: resnet
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    sampling: balanced
+    reps_per_place: 10
+
+  sae_balanced:
+    model: sae
+    encoder_layers: [256, 128, 64]
+    regression_layers: [256]
+    dropout: 0.25
+    corruption_level: 0.1
+    pretrain_epochs: 50
+    pretrain_batch_size: 64
+    pretrain_lr: 0.001
+    freeze_encoder: false
+    learning_rate: 0.0001
+    scheduler: "reduce_on_plateau"
+    sampling: balanced
+    reps_per_place: 10
+
+  ffn_large_balanced:
+    model: ffn
+    hidden_layers: [512, 256, 128]
+    dropout: 0.25
+    activation: "relu"
+    sampling: balanced
+    reps_per_place: 10
+
+  vision_mamba_disclr_balanced:
+    model: "vision_mamba"
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16
+    embed_dim: 384
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    head_type: "mlp"
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    optimizer: "adamw"
+    learning_rate: 0.0001
+    backbone_lr_mult: 0.1
+    scheduler: "constant"
+    sampling: balanced
+    reps_per_place: 10
+    max_epochs: 60
+
+  # Graph nets at 100k, deduplicated
+  gcn_dedup100k:
+    model: gcn
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    max_samples: 100000
+
+  gcn_larger_dedup100k:
+    model: gcn
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 256
+    num_layers: 4
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    max_samples: 100000
+
+  vgae_dedup100k:
+    model: vgae
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    latent_dim: 64
+    dropout: 0.3
+    pooling: "concat"
+    kl_weight: 0.1
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    max_samples: 100000
+
+  # Graph net at balanced N=10
+  gcn_balanced:
+    model: gcn
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    sampling: balanced
+    reps_per_place: 10
+
+  # Balanced N=5 (~59k samples)
+  ffn_large_balanced_n5:
+    model: ffn
+    hidden_layers: [512, 256, 128]
+    dropout: 0.25
+    activation: "relu"
+    sampling: balanced
+    reps_per_place: 5
+
+  sae_balanced_n5:
+    model: sae
+    encoder_layers: [256, 128, 64]
+    regression_layers: [256]
+    dropout: 0.25
+    corruption_level: 0.1
+    pretrain_epochs: 50
+    pretrain_batch_size: 64
+    pretrain_lr: 0.001
+    freeze_encoder: false
+    learning_rate: 0.0001
+    scheduler: "reduce_on_plateau"
+    sampling: balanced
+    reps_per_place: 5
+
+  resnet_balanced_n5:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    sampling: balanced
+    reps_per_place: 5
+
+  resnet50_balanced_n5:
+    model: resnet
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    sampling: balanced
+    reps_per_place: 5
+
+  gcn_balanced_n5:
+    model: gcn
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    sampling: balanced
+    reps_per_place: 5
+
+  vision_mamba_disclr_balanced_n5:
+    model: "vision_mamba"
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16
+    embed_dim: 384
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    head_type: "mlp"
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    optimizer: "adamw"
+    learning_rate: 0.0001
+    backbone_lr_mult: 0.1
+    scheduler: "constant"
+    sampling: balanced
+    reps_per_place: 5
+    max_epochs: 60
+
+  # Swin + EfficientNet, dwconv + disc-LR, three data conditions
+  swin_dwconv_disclr_dedup100k:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    head_type: "dwconv"
+    max_samples: 100000
+    max_epochs: 60
+
+  swin_dwconv_disclr_balanced:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    head_type: "dwconv"
+    sampling: balanced
+    reps_per_place: 10
+    max_epochs: 60
+
+  swin_dwconv_disclr_balanced_n5:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    head_type: "dwconv"
+    sampling: balanced
+    reps_per_place: 5
+    max_epochs: 60
+
+  efficientnet_dwconv_disclr_dedup100k:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    head_type: "dwconv"
+    max_samples: 100000
+    max_epochs: 60
+
+  efficientnet_dwconv_disclr_balanced:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    head_type: "dwconv"
+    sampling: balanced
+    reps_per_place: 10
+    max_epochs: 60
+
+  efficientnet_dwconv_disclr_balanced_n5:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    head_type: "dwconv"
+    sampling: balanced
+    reps_per_place: 5
+    max_epochs: 60
+
+  # Clean-then-retrain (WKNN-LOO, train split only)
+  ffn_large_clean100k:
+    model: ffn
+    hidden_layers: [512, 256, 128]
+    dropout: 0.25
+    activation: "relu"
+    max_samples: 100000
+    clean_fraction: 0.15
+
+  resnet_clean100k:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    max_samples: 100000
+    clean_fraction: 0.15
+
+  resnet50_clean100k:
+    model: resnet
+    variant: "resnet50"
+    pretrained: true
+    freeze_backbone: false
+    max_samples: 100000
+    clean_fraction: 0.15
+
+  vision_mamba_clean100k:
+    model: "vision_mamba"
+    pretrained_path: "models/vision_mamba/vim_s_midclstok_80p5acc.pth"
+    patch_size: 16
+    embed_dim: 384
+    depth: 24
+    ssm_d_state: 16
+    ssm_d_conv: 4
+    ssm_ratio: 2.0
+    drop_path_rate: 0.1
+    use_cls_token: true
+    head_type: "mlp"
+    freeze_backbone: false
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    optimizer: "adamw"
+    learning_rate: 0.0001
+    backbone_lr_mult: 0.1
+    scheduler: "constant"
+    max_samples: 100000
+    clean_fraction: 0.15
+    max_epochs: 60
+
+  # Gap-closing runs (R1)
+
+  # Regression twins of the cls runs
+
+  transformer_reg_100k:
+    model: transformer
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "reduce_on_plateau"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: false
+    learning_rate: 0.0001
+    noise_coefficient: 0.0
+    max_samples: 100000
+
+  vit_reg_100k:
+    model: vit
+    patch_size: 4
+    embed_dim: 256
+    depth: 6
+    nhead: 8
+    dim_feedforward: 512
+    dropout: 0.1
+    scheduler: "cosine_warmup"
+    noise_coefficient: 0.0
+    max_samples: 100000
+
+  mamba_reg_100k:
+    model: mamba
+    patch_size: 4
+    embed_dim: 96
+    depth: 6
+    d_state: 1
+    mlp_ratio: 4.0
+    drop_path_rate: 0.1
+    noise_coefficient: 0.0
+    max_samples: 100000
+
+  spatial_mamba_reg_100k:
+    model: spatial_mamba
+    variant: "tiny"
+    batch_size: 8            # batch 32 runs out of memory on an 8 GB GPU
+    pretrained_path: "models/spatial_mamba/spatial_mamba_t.pth"
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    noise_coefficient: 0.0
+    max_samples: 100000
+    max_epochs: 60
+
+  # BN trunk as in dscnn_cls
+  dscnn_bn_reg_100k:
+    model: dscnn
+    use_batchnorm: true
+    image_shape: [16, 16, 1]
+    noise_coefficient: 0.0
+    max_samples: 100000
+
+  # requires CUDA (mamba-ssm kernels)
+  mamba_vision_reg_100k:
+    model: mamba_vision
+    variant: "mamba_vision_T"
+    pretrained: true
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    spatial_image_mode: "gaussian"
+    image_shape: [128, 128, 1]
+    noise_coefficient: 0.0
+    max_samples: 100000
+    max_epochs: 60
+
+  # Ablations of transformer_cls
+
+  transformer_cls_temporal100k:
+    model: transformer_cls
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "reduce_on_plateau"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: false
+    learning_rate: 0.0001
+    split_strategy: temporal
+    noise_coefficient: 0.0
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  transformer_cls_group100k:
+    model: transformer_cls
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "reduce_on_plateau"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: false
+    learning_rate: 0.0001
+    split_strategy: group
+    noise_coefficient: 0.0
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  transformer_cls_seed7:
+    model: transformer_cls
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "reduce_on_plateau"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: false
+    learning_rate: 0.0001
+    random_seed: 7
+    noise_coefficient: 0.0
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  transformer_cls_seed13:
+    model: transformer_cls
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "reduce_on_plateau"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: false
+    learning_rate: 0.0001
+    random_seed: 13
+    noise_coefficient: 0.0
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # Controls, seeds, dataset size
+
+  # ImageNet ablation at 16x16
+  resnet18_scratch16_100k:
+    model: resnet
+    variant: "resnet18"
+    pretrained: false
+    freeze_backbone: false
+    noise_coefficient: 0.0
+    max_samples: 100000
+
+  # AP-permutation control (fixed shuffle of the AP axis)
+  resnet18_perm_100k:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    ap_permutation_seed: 1337
+    noise_coefficient: 0.0
+    max_samples: 100000
+
+  # Representation ablation, resnet18
+  resnet18_rep_seq16:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    noise_coefficient: 0.0
+    max_samples: 100000
+    max_epochs: 80
+
+  resnet18_rep_oa16:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    noise_coefficient: 0.0
+    max_samples: 100000
+    max_epochs: 80
+    spatial_image_mode: "oa"
+    image_shape: [16, 16, 1]
+
+  resnet18_rep_upscale224:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    noise_coefficient: 0.0
+    max_samples: 100000
+    max_epochs: 80
+    spatial_image_mode: "upscale"
+    image_shape: [224, 224, 1]
+    upscale_source_shape: [16, 16]
+    upscale_mode: "nearest"
+
+  resnet18_rep_gaussian224:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    noise_coefficient: 0.0
+    max_samples: 100000
+    max_epochs: 80
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+
+  resnet18_rep_bilinear224:
+    model: resnet
+    variant: "resnet18"
+    pretrained: true
+    freeze_backbone: false
+    noise_coefficient: 0.0
+    max_samples: 100000
+    max_epochs: 80
+    spatial_image_mode: "bilinear"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+
+  # Representation ablation, 224px backbones
+  efficientnet_rep_upscale224:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    noise_coefficient: 0.0
+    spatial_image_mode: "upscale"
+    image_shape: [224, 224, 1]
+    upscale_source_shape: [16, 16]
+    upscale_mode: "nearest"
+    head_type: "dwconv"
+    max_samples: 100000
+    max_epochs: 60
+
+  efficientnet_rep_gaussian224:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    noise_coefficient: 0.0
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    head_type: "dwconv"
+    max_samples: 100000
+    max_epochs: 60
+
+  efficientnet_rep_bilinear224:
+    model: efficientnet
+    variant: "b0"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    noise_coefficient: 0.0
+    spatial_image_mode: "bilinear"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    head_type: "dwconv"
+    max_samples: 100000
+    max_epochs: 60
+
+  swin_rep_upscale224:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    noise_coefficient: 0.0
+    spatial_image_mode: "upscale"
+    image_shape: [224, 224, 1]
+    upscale_source_shape: [16, 16]
+    upscale_mode: "nearest"
+    out_stage: 2
+    head_type: "dwconv"
+    max_samples: 100000
+    max_epochs: 60
+
+  swin_rep_gaussian224:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    noise_coefficient: 0.0
+    spatial_image_mode: "gaussian"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    gaussian_sigma_multiplier: 2.0
+    out_stage: 2
+    head_type: "dwconv"
+    max_samples: 100000
+    max_epochs: 60
+
+  swin_rep_bilinear224:
+    model: swin
+    variant: "swin_tiny_patch4_window7_224"
+    pretrained: true
+    freeze_backbone: false
+    scheduler: "constant"
+    optimizer: "adamw"
+    backbone_lr_mult: 0.1
+    learning_rate: 0.0001
+    noise_coefficient: 0.0
+    spatial_image_mode: "bilinear"
+    image_shape: [224, 224, 1]
+    fill_mode: "mean"
+    out_stage: 2
+    head_type: "dwconv"
+    max_samples: 100000
+    max_epochs: 60
+
+  # Split matrix, GCN-cls (R2)
+  gcn_cls_temporal100k:
+    model: gcn_cls
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+    split_strategy: temporal
+
+  gcn_cls_group100k:
+    model: gcn_cls
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+    split_strategy: group
+
+  # Graph position ablation (R1)
+  gcn_rep_pos_cls:          # baseline rerun
+    model: gcn_cls
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  gcn_rep_nopos_cls:        # nodes [rssi], mean-RSSI edges
+    model: gcn_cls
+    in_channels: 1
+    use_ap_positions: false
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  gcn_rep_pos_reg:
+    model: gcn
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    max_samples: 100000
+
+  gcn_rep_nopos_reg:
+    model: gcn
+    in_channels: 1
+    use_ap_positions: false
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    max_samples: 100000
+
+  # Seeds for the cls band
+  gcn_cls_seed7:
+    model: gcn_cls
+    in_channels: 3
+    use_ap_positions: true
+    hidden_channels: 128
+    num_layers: 3
+    dropout: 0.3
+    pooling: "concat"
+    rssi_threshold: -95.0
+    graph_topology: "covisible"
+    random_seed: 7
+    noise_coefficient: 0.0
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  ffn_cls_seed7:
+    model: ffn_cls
+    hidden_layers: [512, 256, 128]
+    dropout: 0.25
+    activation: "relu"
+    random_seed: 7
+    noise_coefficient: 0.0
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # Dataset-size curve, FFN-cls (R1)
+  ffn_cls_25k:
+    model: ffn_cls
+    hidden_layers: [512, 256, 128]
+    dropout: 0.25
+    activation: "relu"
+    noise_coefficient: 0.0
+    max_samples: 25000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  ffn_cls_50k:
+    model: ffn_cls
+    hidden_layers: [512, 256, 128]
+    dropout: 0.25
+    activation: "relu"
+    noise_coefficient: 0.0
+    max_samples: 50000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  ffn_cls_200k:
+    model: ffn_cls
+    hidden_layers: [512, 256, 128]
+    dropout: 0.25
+    activation: "relu"
+    noise_coefficient: 0.0
+    max_samples: 200000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # full deduplicated set (~562k)
+  ffn_cls_full:
+    model: ffn_cls
+    hidden_layers: [512, 256, 128]
+    dropout: 0.25
+    activation: "relu"
+    noise_coefficient: 0.0
+    max_samples: null
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  # Stability repeats of transformer_cls_100k
+
+  transformer_cls_repro2:
+    model: transformer_cls
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "reduce_on_plateau"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: false
+    learning_rate: 0.0001
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  transformer_cls_repro3:
+    model: transformer_cls
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "reduce_on_plateau"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: false
+    learning_rate: 0.0001
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  transformer_cls_repro4:
+    model: transformer_cls
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "reduce_on_plateau"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: false
+    learning_rate: 0.0001
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
+
+  transformer_cls_warmup:
+    model: transformer_cls
+    d_model: 128
+    nhead: 8
+    num_encoder_layers: 4
+    dim_feedforward: 512
+    dropout: 0.1
+    activation: "relu"
+    scheduler: "cosine_warmup"
+    masking_strategy: "additive"
+    pooling: "cls"
+    variable_length: true
+    spatial_positional_encoding: false
+    learning_rate: 0.0001
+    max_samples: 100000
+    label_sigma_m: 2.5
+    readout_k: 9
